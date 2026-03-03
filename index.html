@@ -1,1 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>MC Voice Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0c10; --panel: #111520; --border: #1e2535;
+    --accent: #00e5ff; --accent2: #7c3aed; --green: #10b981;
+    --red: #ef4444; --amber: #f59e0b; --text: #e2e8f0;
+    --muted: #64748b; --radius: 12px;
+  }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Syne", sans-serif; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 1.5rem; overflow-x: hidden;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,.03) 1px, transparent 1px);
+    background-size: 40px 40px; pointer-events: none; z-index: 0;
+  }
+  body::after {
+    content: ""; position: fixed;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(0,229,255,.07) 0%, transparent 70%);
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    pointer-events: none; z-index: 0;
+  }
+  .card {
+    position: relative; z-index: 1; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 2.5rem 2rem; width: 100%; max-width: 480px;
+    box-shadow: 0 0 60px rgba(0,229,255,.05), 0 24px 48px rgba(0,0,0,.4);
+  }
+  .header { display: flex; align-items: center; gap: .75rem; margin-bottom: 2rem; }
+  .icon-wrap {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    border-radius: 10px; display: flex; align-items: center;
+    justify-content: center; font-size: 1.3rem; flex-shrink: 0;
+  }
+  h1 { font-size: 1.4rem; font-weight: 800; letter-spacing: -.02em; }
+  .sub { font-size: .78rem; color: var(--muted); font-family: "JetBrains Mono", monospace; }
+  .status-bar {
+    display: flex; align-items: center; gap: .6rem;
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 8px; padding: .6rem 1rem; margin-bottom: 1.5rem;
+    font-family: "JetBrains Mono", monospace; font-size: .8rem;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); flex-shrink: 0; transition: background .3s;
+  }
+  .dot.connected  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.error      { background: var(--red);   box-shadow: 0 0 8px var(--red); }
+  .dot.connecting { background: var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  #status-text { flex: 1; color: var(--text); }
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: .5rem;
+    width: 100%; padding: .9rem; border: none; border-radius: 10px;
+    font-family: "Syne", sans-serif; font-size: 1rem; font-weight: 700;
+    cursor: pointer; transition: transform .15s, box-shadow .15s, opacity .15s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent2) 0%, #2563eb 100%);
+    color: #fff; box-shadow: 0 4px 20px rgba(124,58,237,.3); margin-bottom: .75rem;
+  }
+  .btn-primary:hover:not(:disabled) { box-shadow: 0 4px 30px rgba(124,58,237,.5); }
+  .btn-mute {
+    background: #1e2535; color: var(--text);
+    border: 1px solid var(--border); margin-bottom: .75rem;
+  }
+  .btn-mute.muted { background: rgba(239,68,68,.15); border-color: var(--red); color: var(--red); }
+  .btn-mute:hover:not(:disabled) { background: #252d3d; }
+  .viz-wrap {
+    margin: 1.25rem 0; height: 56px; background: #0d1117;
+    border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; display: none;
+  }
+  .viz-wrap.active { display: block; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .section-title {
+    font-size: .7rem; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: .6rem;
+  }
+  #player-list { display: flex; flex-direction: column; gap: .4rem; max-height: 200px; overflow-y: auto; }
+  .player-row {
+    display: flex; align-items: center; gap: .6rem; background: #0d1117;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: .5rem .75rem; font-size: .85rem; transition: border-color .2s;
+  }
+  .player-row.speaking { border-color: var(--green); }
+  .player-row.speaking .player-dot { background: var(--green); }
+  .player-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .player-name { flex: 1; }
+  .player-dist { font-family: "JetBrains Mono", monospace; font-size: .72rem; color: var(--muted); }
+  .empty-list { color: var(--muted); font-size: .82rem; text-align: center; padding: 1rem 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="icon-wrap">🎙️</div>
+    <div>
+      <h1>MC Voice Chat</h1>
+      <div class="sub">Proximity bridge — Bedrock Edition</div>
+    </div>
+  </div>
+  <div class="status-bar">
+    <div class="dot connecting" id="dot"></div>
+    <span id="status-text">Waiting to connect…</span>
+  </div>
+  <button class="btn btn-primary" id="btn-join">🎤 Join Voice Chat</button>
+  <button class="btn btn-mute" id="btn-mute" disabled>🎤 Mute</button>
+  <div class="viz-wrap" id="viz-wrap">
+    <canvas id="viz"></canvas>
+  </div>
+  <div class="section-title">Nearby Players</div>
+  <div id="player-list">
+    <div class="empty-list">Join voice chat to see nearby players</div>
+  </div>
+</div>
+
+<script>
 const BRIDGE_WS_URL = "wss://your-bridge.onrender.com";
+
+const MSG_AUDIO    = 0x01;
+const MSG_MIC_DATA = 0x10;
+
+let ws = null, ctx = null, muted = false, connected = false;
+const nearbyPlayers = new Map();
+let selfPos = { x:0, y:0, z:0 };
+
+const dot        = document.getElementById("dot");
+const statusText = document.getElementById("status-text");
+const btnJoin    = document.getElementById("btn-join");
+const btnMute    = document.getElementById("btn-mute");
+const vizWrap    = document.getElementById("viz-wrap");
+const vizCanvas  = document.getElementById("viz");
+const playerList = document.getElementById("player-list");
+
+function getToken() {
+  return new URLSearchParams(window.location.search).get("token") || "";
+}
+
+btnJoin.addEventListener("click", async () => {
+  const token = getToken();
+  if (!token) { setStatus("error", "No token in URL. Get a link from Minecraft."); return; }
+  btnJoin.disabled = true;
+  await startVoice(token);
+});
+
+btnMute.addEventListener("click", () => {
+  muted = !muted;
+  btnMute.classList.toggle("muted", muted);
+  btnMute.textContent = muted ? "🔇 Click to unmute" : "🎤 Mute";
+});
+
+async function startVoice(token) {
+  setStatus("connecting", "Requesting microphone…");
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate:48000, channelCount:1, echoCancellation:true, noiseSuppression:true }
+    });
+  } catch(e) {
+    setStatus("error", "Mic denied: " + e.message);
+    btnJoin.disabled = false; return;
+  }
+
+  ctx = new AudioContext({ sampleRate: 48000 });
+
+  const workletCode = `
+    class PcmCapture extends AudioWorkletProcessor {
+      constructor() { super(); this._buf=[]; this._size=960; }
+      process(inputs) {
+        const ch=inputs[0]?.[0]; if(!ch) return true;
+        for(let i=0;i<ch.length;i++){
+          this._buf.push(ch[i]);
+          if(this._buf.length===this._size){
+            const i16=new Int16Array(this._size);
+            for(let j=0;j<this._size;j++)
+              i16[j]=Math.max(-32768,Math.min(32767,Math.round(this._buf[j]*32767)));
+            this.port.postMessage(i16.buffer,[i16.buffer]);
+            this._buf=[];
+          }
+        }
+        return true;
+      }
+    }
+    registerProcessor("pcm-capture",PcmCapture);
+  `;
+  const blob = new Blob([workletCode], { type:"application/javascript" });
+  const url  = URL.createObjectURL(blob);
+  await ctx.audioWorklet.addModule(url);
+  URL.revokeObjectURL(url);
+
+  const src     = ctx.createMediaStreamSource(stream);
+  const worklet = new AudioWorkletNode(ctx, "pcm-capture");
+  src.connect(worklet);
+  startVisualiser(stream);
+
+  worklet.port.onmessage = (e) => {
+    if (!muted && ws && ws.readyState === WebSocket.OPEN) {
+      const pcm = new Uint8Array(e.data);
+      const out = new Uint8Array(1 + pcm.length);
+      out[0] = MSG_MIC_DATA;
+      out.set(pcm, 1);
+      ws.send(out.buffer);
+    }
+  };
+
+  setStatus("connecting", "Connecting to bridge…");
+  ws = new WebSocket(BRIDGE_WS_URL);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen    = () => { ws.send(JSON.stringify({ type:"browser_auth", token })); setStatus("connecting","Authenticating…"); };
+  ws.onmessage = (e) => { if(e.data instanceof ArrayBuffer) handleBinaryFromBridge(e.data); else handleJsonFromBridge(JSON.parse(e.data)); };
+  ws.onclose   = (e) => { connected=false; setStatus("error","Disconnected: "+(e.reason||"connection lost")); btnJoin.disabled=false; btnMute.disabled=true; };
+  ws.onerror   = ()  => setStatus("error","WebSocket error");
+}
+
+function handleJsonFromBridge(msg) {
+  switch(msg.type) {
+    case "auth_ok":
+      connected=true;
+      setStatus("connected", "Connected as "+msg.name);
+      btnMute.disabled=false;
+      vizWrap.classList.add("active");
+      break;
+    case "auth_fail":
+      setStatus("error","Auth failed: "+(msg.reason||"invalid token"));
+      btnJoin.disabled=false; break;
+    case "position":
+    case "position_init":
+      updatePlayerPosition(msg); break;
+    case "self_position":
+      selfPos={x:msg.x,y:msg.y,z:msg.z};
+      if(ctx){
+        ctx.listener.positionX?.setValueAtTime(msg.x,ctx.currentTime);
+        ctx.listener.positionY?.setValueAtTime(msg.y,ctx.currentTime);
+        ctx.listener.positionZ?.setValueAtTime(msg.z,ctx.currentTime);
+      }
+      break;
+    case "player_left": setStatus("error","You left the server"); break;
+  }
+}
+
+async function handleBinaryFromBridge(data) {
+  const view=new DataView(data);
+  if(view.getUint8(0)!==MSG_AUDIO) return;
+  const volume=view.getUint8(1)/255;
+  const nameLen=view.getUint8(2);
+  const name=new TextDecoder().decode(new Uint8Array(data,3,nameLen));
+  const opusData=new Uint8Array(data,3+nameLen);
+  const speaker=await getOrCreateSpeaker(name);
+  speaker.gainNode.gain.value=volume;
+  try {
+    speaker.decoder.decode(new EncodedAudioChunk({
+      type:"key", timestamp:performance.now()*1000, data:opusData
+    }));
+  } catch(e) { console.warn("Decode error:",e); }
+  const row=document.querySelector(`[data-uuid="${speaker._uuid}"]`);
+  if(row){ row.classList.add("speaking"); clearTimeout(row._t); row._t=setTimeout(()=>row.classList.remove("speaking"),400); }
+}
+
+function updatePlayerPosition(msg) {
+  let p=nearbyPlayers.get(msg.uuid);
+  if(!p){ p={uuid:msg.uuid,name:msg.name,x:0,y:0,z:0,panner:null,gainNode:null,decoder:null}; nearbyPlayers.set(msg.uuid,p); }
+  p.name=msg.name; p.x=msg.x; p.y=msg.y; p.z=msg.z; p.dist=msg.dist; p.inRange=msg.inRange;
+  if(p.panner){ p.panner.positionX.value=msg.x; p.panner.positionY.value=msg.y; p.panner.positionZ.value=msg.z; }
+  renderPlayerList();
+}
+
+async function getOrCreateSpeaker(name) {
+  for(const [uuid,p] of nearbyPlayers){ if(p.name===name){ if(!p.decoder) await setupDecoder(p); return p; } }
+  const uuid="browser-"+name;
+  const p={uuid,name,x:0,y:0,z:0,panner:null,gainNode:null,decoder:null};
+  nearbyPlayers.set(uuid,p); await setupDecoder(p); renderPlayerList(); return p;
+}
+
+async function setupDecoder(player) {
+  const g=ctx.createGain(), pan=ctx.createPanner();
+  pan.panningModel="HRTF"; pan.distanceModel="inverse";
+  pan.refDistance=1; pan.maxDistance=24; pan.rolloffFactor=1.5;
+  g.connect(pan); pan.connect(ctx.destination);
+  const dec=new AudioDecoder({
+    output:(audioData)=>{
+      const n=audioData.numberOfFrames;
+      const buf=ctx.createBuffer(1,n,audioData.sampleRate);
+      audioData.copyTo(buf.getChannelData(0),{planeIndex:0});
+      audioData.close();
+      const src=ctx.createBufferSource(); src.buffer=buf; src.connect(g); src.start();
+    },
+    error:(e)=>console.error("Decoder error:",e)
+  });
+  await dec.configure({codec:"opus",sampleRate:48000,numberOfChannels:1});
+  player.gainNode=g; player.panner=pan; player.decoder=dec; player._uuid=player.uuid;
+}
+
+function renderPlayerList() {
+  if(nearbyPlayers.size===0){ playerList.innerHTML='<div class="empty-list">No players nearby</div>'; return; }
+  playerList.innerHTML="";
+  nearbyPlayers.forEach((p)=>{
+    const row=document.createElement("div");
+    row.className="player-row"; row.dataset.uuid=p.uuid;
+    const dist=p.dist!=null?`${Math.round(p.dist)}m`:"";
+    row.innerHTML=`<div class="player-dot"></div><span class="player-name">${escHtml(p.name)}</span><span class="player-dist">${dist}</span>`;
+    playerList.appendChild(row);
+  });
+}
+
+function setStatus(state,msg){ dot.className="dot "+state; statusText.textContent=msg; }
+function escHtml(s){ return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function startVisualiser(stream) {
+  const a=new AudioContext(), an=a.createAnalyser();
+  an.fftSize=256; a.createMediaStreamSource(stream).connect(an);
+  const W=vizCanvas.width=vizCanvas.offsetWidth, H=vizCanvas.height=vizCanvas.offsetHeight;
+  const vc=vizCanvas.getContext("2d"), data=new Uint8Array(an.frequencyBinCount);
+  function draw(){
+    requestAnimationFrame(draw); an.getByteFrequencyData(data);
+    vc.clearRect(0,0,W,H);
+    const bw=W/data.length*2.5;
+    data.forEach((v,i)=>{ const h=(v/255)*H; vc.fillStyle=`hsl(${180+(v/255)*60},100%,60%)`; vc.fillRect(i*(bw+1),H-h,bw,h); });
+  }
+  draw();
+}
+</script>
+</body>
+  </html>
