@@ -155,9 +155,22 @@ function getToken() {
   return new URLSearchParams(window.location.search).get("token") || "";
 }
 
+function getPlayerInfo() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    uuid: params.get("uuid") || "",
+    name: params.get("name") || "Bedrock Player"
+  };
+   }
+
 btnJoin.addEventListener("click", async () => {
-  const token = getToken();
-  if (!token) { setStatus("error", "No token in URL. Get a link from Minecraft."); return; }
+  const params  = getPlayerInfo();
+  const token   = getToken();
+  // Accept either token OR uuid+name
+  if (!token && !params.uuid) {
+    setStatus("error", "No token in URL. Get a link from Minecraft.");
+    return;
+  }
   btnJoin.disabled = true;
   await startVoice(token);
 });
