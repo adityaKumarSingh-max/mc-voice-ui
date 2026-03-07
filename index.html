@@ -279,6 +279,11 @@ function handleJsonFromBridge(msg) {
       }
       break;
     case "player_left": setStatus("error","You left the server"); break;
+    case "mute_command":
+  muted = msg.muted;
+  btnMute.classList.toggle("muted", muted);
+  btnMute.textContent = muted ? "🔇 Unmute" : "🎤 Mute";
+  break;
   }
 }
 
