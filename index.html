@@ -239,7 +239,18 @@ async function startVoice(token) {
   ws = new WebSocket(BRIDGE_WS_URL);
   ws.binaryType = "arraybuffer";
 
-  ws.onopen    = () => { ws.send(JSON.stringify({ type:"browser_auth", token })); setStatus("connecting","Authenticating…"); };
+  ws.onopen = () => {
+  const params = getPlayerInfo();
+  const token  = getToken();
+  if (token) {
+    ws.send(JSON.stringify({ type: "browser_auth", token }));
+  } else {
+    ws.send(JSON.stringify({
+      type: "browser_auth",
+      uuid: params.uuid,
+      name: params.name
+    }));
+                     }
   ws.onmessage = (e) => { if(e.data instanceof ArrayBuffer) handleBinaryFromBridge(e.data); else handleJsonFromBridge(JSON.parse(e.data)); };
   ws.onclose   = (e) => { connected=false; setStatus("error","Disconnected: "+(e.reason||"connection lost")); btnJoin.disabled=false; btnMute.disabled=true; };
   ws.onerror   = ()  => setStatus("error","WebSocket error");
