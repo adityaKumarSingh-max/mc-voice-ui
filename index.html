@@ -195,7 +195,7 @@ async function startVoice(playerName) {
 
   // Capture mic as raw PCM using ScriptProcessor
   const source    = audioCtx.createMediaStreamSource(stream);
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  const processor = audioCtx.createScriptProcessor(512, 1, 1);
 
   source.connect(processor);
   processor.connect(audioCtx.destination);
