@@ -28,13 +28,6 @@
       linear-gradient(90deg, rgba(0,229,255,.03) 1px, transparent 1px);
     background-size: 40px 40px; pointer-events: none; z-index: 0;
   }
-  body::after {
-    content: ""; position: fixed;
-    width: 600px; height: 600px;
-    background: radial-gradient(circle, rgba(0,229,255,.07) 0%, transparent 70%);
-    top: 50%; left: 50%; transform: translate(-50%, -50%);
-    pointer-events: none; z-index: 0;
-  }
   .card {
     position: relative; z-index: 1; background: var(--panel);
     border: 1px solid var(--border); border-radius: var(--radius);
@@ -115,7 +108,6 @@
   .player-row.speaking .player-dot { background: var(--green); }
   .player-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
   .player-name { flex: 1; }
-  .player-dist { font-family: "JetBrains Mono", monospace; font-size: .72rem; color: var(--muted); }
   .empty-list { color: var(--muted); font-size: .82rem; text-align: center; padding: 1rem 0; }
 </style>
 </head>
@@ -147,11 +139,9 @@
 <script>
 const BRIDGE_WS_URL = "wss://mc-voice-bridge-production.up.railway.app";
 
-const MSG_AUDIO    = 0x01;
-const MSG_MIC_DATA = 0x10;
-
-let ws = null, ctx = null, muted = false, connected = false;
-const nearbyPlayers = new Map();
+let ws = null, audioCtx = null, muted = false;
+const players = new Map();
+let nextPlayTime = 0;
 
 const dot        = document.getElementById("dot");
 const statusText = document.getElementById("status-text");
@@ -162,11 +152,6 @@ const vizCanvas  = document.getElementById("viz");
 const playerList = document.getElementById("player-list");
 const nameInput  = document.getElementById("name-input");
 
-// Auto fill name from URL if provided
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.get("name")) nameInput.value = urlParams.get("name");
-if (urlParams.get("token")) nameInput.value = urlParams.get("token");
-
 btnJoin.addEventListener("click", async () => {
   const name = nameInput.value.trim();
   if (!name) {
@@ -174,7 +159,7 @@ btnJoin.addEventListener("click", async () => {
     nameInput.focus();
     return;
   }
-  btnJoin.disabled = true;
+  btnJoin.disabled  = true;
   nameInput.disabled = true;
   await startVoice(name);
 });
@@ -190,56 +175,48 @@ async function startVoice(playerName) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate:48000, channelCount:1, echoCancellation:true, noiseSuppression:true }
+      audio: {
+        sampleRate: 48000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
     });
   } catch(e) {
     setStatus("error", "Mic denied: " + e.message);
-    btnJoin.disabled = false;
+    btnJoin.disabled   = false;
     nameInput.disabled = false;
     return;
   }
 
-  ctx = new AudioContext({ sampleRate: 48000 });
+  audioCtx  = new AudioContext({ sampleRate: 48000 });
+  nextPlayTime = audioCtx.currentTime;
 
-  const workletCode = `
-    class PcmCapture extends AudioWorkletProcessor {
-      constructor() { super(); this._buf=[]; this._size=960; }
-      process(inputs) {
-        const ch=inputs[0]?.[0]; if(!ch) return true;
-        for(let i=0;i<ch.length;i++){
-          this._buf.push(ch[i]);
-          if(this._buf.length===this._size){
-            const i16=new Int16Array(this._size);
-            for(let j=0;j<this._size;j++)
-              i16[j]=Math.max(-32768,Math.min(32767,Math.round(this._buf[j]*32767)));
-            this.port.postMessage(i16.buffer,[i16.buffer]);
-            this._buf=[];
-          }
-        }
-        return true;
-      }
+  // Capture mic as raw PCM using ScriptProcessor
+  const source    = audioCtx.createMediaStreamSource(stream);
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
+
+  processor.onaudioprocess = (e) => {
+    if (muted || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const float32  = e.inputBuffer.getChannelData(0);
+    const int16    = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
     }
-    registerProcessor("pcm-capture",PcmCapture);
-  `;
-  const blob = new Blob([workletCode], { type:"application/javascript" });
-  const url  = URL.createObjectURL(blob);
-  await ctx.audioWorklet.addModule(url);
-  URL.revokeObjectURL(url);
-
-  const src     = ctx.createMediaStreamSource(stream);
-  const worklet = new AudioWorkletNode(ctx, "pcm-capture");
-  src.connect(worklet);
-  startVisualiser(stream);
-
-  worklet.port.onmessage = (e) => {
-    if (!muted && ws && ws.readyState === WebSocket.OPEN) {
-      const pcm = new Uint8Array(e.data);
-      const out = new Uint8Array(1 + pcm.length);
-      out[0] = MSG_MIC_DATA;
-      out.set(pcm, 1);
-      ws.send(out.buffer);
-    }
+    // Send: [0x10][int16 PCM data]
+    const header = new Uint8Array([0x10]);
+    const pcm    = new Uint8Array(int16.buffer);
+    const packet = new Uint8Array(1 + pcm.length);
+    packet.set(header, 0);
+    packet.set(pcm, 1);
+    ws.send(packet.buffer);
   };
+
+  startVisualiser(stream);
 
   setStatus("connecting", "Connecting to bridge…");
   ws = new WebSocket(BRIDGE_WS_URL);
@@ -254,133 +231,128 @@ async function startVoice(playerName) {
   };
 
   ws.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer) handleBinaryFromBridge(e.data);
-    else handleJsonFromBridge(JSON.parse(e.data));
+    if (e.data instanceof ArrayBuffer) {
+      handleAudio(e.data);
+    } else {
+      handleJson(JSON.parse(e.data));
+    }
   };
 
   ws.onclose = (e) => {
-    connected = false;
     setStatus("error", "Disconnected: " + (e.reason || "connection lost"));
-    btnJoin.disabled = false;
+    btnJoin.disabled   = false;
     nameInput.disabled = false;
-    btnMute.disabled = true;
+    btnMute.disabled   = true;
   };
 
   ws.onerror = () => setStatus("error", "WebSocket error");
 }
 
-function handleJsonFromBridge(msg) {
+function handleJson(msg) {
   switch(msg.type) {
     case "auth_ok":
-      connected = true;
       setStatus("connected", "Connected as " + msg.name);
       btnMute.disabled = false;
       vizWrap.classList.add("active");
       break;
     case "auth_fail":
-      setStatus("error", "Auth failed: " + (msg.reason || "invalid token"));
-      btnJoin.disabled = false;
+      setStatus("error", "Auth failed: " + (msg.reason || "unknown"));
+      btnJoin.disabled   = false;
       nameInput.disabled = false;
       break;
-    case "position":
-    case "position_init":
-      updatePlayerPosition(msg); break;
     case "player_left":
-      setStatus("error", "You left the server"); break;
+      setStatus("error", "You left the server");
+      break;
     case "mute_command":
       muted = msg.muted;
       btnMute.classList.toggle("muted", muted);
       btnMute.textContent = muted ? "🔇 Unmute" : "🎤 Mute";
       break;
+    case "position_init":
+      addPlayer(msg.uuid, msg.name);
+      break;
   }
 }
 
-async function handleBinaryFromBridge(data) {
-  const view = new DataView(data);
-  if (view.getUint8(0) !== MSG_AUDIO) return;
+function handleAudio(data) {
+  if (!audioCtx) return;
+  const view    = new DataView(data);
+  const firstByte = view.getUint8(0);
+  if (firstByte !== 0x01) return;
+
+  // Format: [0x01][nameLen][name bytes][int16 PCM]
   const nameLen  = view.getUint8(1);
   const name     = new TextDecoder().decode(new Uint8Array(data, 2, nameLen));
-  const pcmData  = new Int16Array(data, 2 + nameLen);
-  const speaker  = await getOrCreateSpeaker(name);
+  const pcmBytes = new Uint8Array(data, 2 + nameLen);
+  const int16    = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength / 2);
 
-  // Convert Int16 PCM to Float32
-  const float32 = new Float32Array(pcmData.length);
-  for (let i = 0; i < pcmData.length; i++) {
-    float32[i] = pcmData[i] / 32768.0;
+  // Convert Int16 to Float32
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768.0;
   }
 
-  // Play audio
-  if (ctx) {
-    const buf = ctx.createBuffer(1, float32.length, 48000);
-    buf.copyToChannel(float32, 0);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(speaker.gainNode);
-    src.start();
-       }
-  const row = document.querySelector(`[data-uuid="${speaker._uuid}"]`);
+  // Play audio smoothly
+  const buffer = audioCtx.createBuffer(1, float32.length, 48000);
+  buffer.copyToChannel(float32, 0);
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now + 0.05;
+  source.start(nextPlayTime);
+  nextPlayTime += buffer.duration;
+
+  // Show speaking indicator
+  addPlayer("browser-" + name, name);
+  const row = document.querySelector(`[data-name="${name}"]`);
   if (row) {
     row.classList.add("speaking");
     clearTimeout(row._t);
-    row._t = setTimeout(() => row.classList.remove("speaking"), 400);
+    row._t = setTimeout(() => row.classList.remove("speaking"), 500);
   }
 }
 
-function updatePlayerPosition(msg) {
-  let p = nearbyPlayers.get(msg.uuid);
-  if (!p) {
-    p = { uuid:msg.uuid, name:msg.name, x:0, y:0, z:0, panner:null, gainNode:null, decoder:null };
-    nearbyPlayers.set(msg.uuid, p);
+function addPlayer(uuid, name) {
+  if (!players.has(uuid)) {
+    players.set(uuid, name);
+    renderPlayerList();
   }
-  p.name = msg.name;
-  renderPlayerList();
 }
-
-async function getOrCreateSpeaker(name) {
-  for (const [uuid, p] of nearbyPlayers) {
-    if (p.name === name) { if (!p.decoder) await setupDecoder(p); return p; }
-  }
-  const uuid = "browser-" + name;
-  const p = { uuid, name, x:0, y:0, z:0, panner:null, gainNode:null, decoder:null };
-  nearbyPlayers.set(uuid, p);
-  await setupDecoder(p);
-  renderPlayerList();
-  return p;
-}
-
-async function setupDecoder(player) {
-  const g   = ctx.createGain();
-  g.gain.value = 1.0;
-  g.connect(ctx.destination);
-  player.gainNode = g;
-  player._uuid    = player.uuid;
- }
 
 function renderPlayerList() {
-  if (nearbyPlayers.size === 0) {
+  if (players.size === 0) {
     playerList.innerHTML = '<div class="empty-list">No players in voice yet</div>';
     return;
   }
   playerList.innerHTML = "";
-  nearbyPlayers.forEach((p) => {
+  players.forEach((name, uuid) => {
     const row = document.createElement("div");
-    row.className     = "player-row";
-    row.dataset.uuid  = p.uuid;
-    row.innerHTML = `<div class="player-dot"></div><span class="player-name">${escHtml(p.name)}</span>`;
+    row.className    = "player-row";
+    row.dataset.name = name;
+    row.innerHTML    = `<div class="player-dot"></div><span class="player-name">${escHtml(name)}</span>`;
     playerList.appendChild(row);
   });
 }
 
-function setStatus(state, msg) { dot.className = "dot " + state; statusText.textContent = msg; }
-function escHtml(s) { return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function setStatus(state, msg) {
+  dot.className      = "dot " + state;
+  statusText.textContent = msg;
+}
+
+function escHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
 
 function startVisualiser(stream) {
-  const a  = new AudioContext(), an = a.createAnalyser();
+  const a  = new AudioContext();
+  const an = a.createAnalyser();
   an.fftSize = 256;
   a.createMediaStreamSource(stream).connect(an);
-  const W  = vizCanvas.width  = vizCanvas.offsetWidth;
-  const H  = vizCanvas.height = vizCanvas.offsetHeight;
-  const vc = vizCanvas.getContext("2d");
+  const W    = vizCanvas.width  = vizCanvas.offsetWidth;
+  const H    = vizCanvas.height = vizCanvas.offsetHeight;
+  const vc   = vizCanvas.getContext("2d");
   const data = new Uint8Array(an.frequencyBinCount);
   function draw() {
     requestAnimationFrame(draw);
@@ -397,4 +369,4 @@ function startVisualiser(stream) {
 }
 </script>
 </body>
- </html>
+   </html>
