@@ -65,6 +65,16 @@
   .dot.connecting { background: var(--amber); animation: pulse 1s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
   #status-text { flex: 1; color: var(--text); }
+  .name-input {
+    width: 100%; padding: .9rem 1rem;
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 10px; color: var(--text);
+    font-family: "Syne", sans-serif; font-size: 1rem;
+    margin-bottom: .75rem; outline: none;
+    transition: border-color .2s;
+  }
+  .name-input:focus { border-color: var(--accent2); }
+  .name-input::placeholder { color: var(--muted); }
   .btn {
     display: flex; align-items: center; justify-content: center; gap: .5rem;
     width: 100%; padding: .9rem; border: none; border-radius: 10px;
@@ -115,21 +125,22 @@
     <div class="icon-wrap">🎙️</div>
     <div>
       <h1>MC Voice Chat</h1>
-      <div class="sub">Proximity bridge — Bedrock Edition</div>
+      <div class="sub">Global voice — Bedrock & Java</div>
     </div>
   </div>
   <div class="status-bar">
     <div class="dot connecting" id="dot"></div>
-    <span id="status-text">Waiting to connect…</span>
+    <span id="status-text">Enter your name to join…</span>
   </div>
+  <input class="name-input" id="name-input" type="text" placeholder="Enter your Minecraft username" maxlength="32"/>
   <button class="btn btn-primary" id="btn-join">🎤 Join Voice Chat</button>
   <button class="btn btn-mute" id="btn-mute" disabled>🎤 Mute</button>
   <div class="viz-wrap" id="viz-wrap">
     <canvas id="viz"></canvas>
   </div>
-  <div class="section-title">Nearby Players</div>
+  <div class="section-title">Players in Voice</div>
   <div id="player-list">
-    <div class="empty-list">Join voice chat to see nearby players</div>
+    <div class="empty-list">Join voice chat to see players</div>
   </div>
 </div>
 
@@ -141,7 +152,6 @@ const MSG_MIC_DATA = 0x10;
 
 let ws = null, ctx = null, muted = false, connected = false;
 const nearbyPlayers = new Map();
-let selfPos = { x:0, y:0, z:0 };
 
 const dot        = document.getElementById("dot");
 const statusText = document.getElementById("status-text");
@@ -150,38 +160,32 @@ const btnMute    = document.getElementById("btn-mute");
 const vizWrap    = document.getElementById("viz-wrap");
 const vizCanvas  = document.getElementById("viz");
 const playerList = document.getElementById("player-list");
+const nameInput  = document.getElementById("name-input");
 
-function getToken() {
-  return new URLSearchParams(window.location.search).get("token") || "";
-}
-
-function getPlayerInfo() {
-  const params = new URLSearchParams(window.location.search);
-  return {
-    uuid: params.get("uuid") || "",
-    name: params.get("name") || "Bedrock Player"
-  };
-   }
+// Auto fill name from URL if provided
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get("name")) nameInput.value = urlParams.get("name");
+if (urlParams.get("token")) nameInput.value = urlParams.get("token");
 
 btnJoin.addEventListener("click", async () => {
-  const params  = getPlayerInfo();
-  const token   = getToken();
-  // Accept either token OR uuid+name
-  if (!token && !params.uuid) {
-    setStatus("error", "No token in URL. Get a link from Minecraft.");
+  const name = nameInput.value.trim();
+  if (!name) {
+    setStatus("error", "Please enter your Minecraft username!");
+    nameInput.focus();
     return;
   }
   btnJoin.disabled = true;
-  await startVoice(token);
+  nameInput.disabled = true;
+  await startVoice(name);
 });
 
 btnMute.addEventListener("click", () => {
   muted = !muted;
   btnMute.classList.toggle("muted", muted);
-  btnMute.textContent = muted ? "🔇 Click to unmute" : "🎤 Mute";
+  btnMute.textContent = muted ? "🔇 Unmute" : "🎤 Mute";
 });
 
-async function startVoice(token) {
+async function startVoice(playerName) {
   setStatus("connecting", "Requesting microphone…");
   let stream;
   try {
@@ -190,7 +194,9 @@ async function startVoice(token) {
     });
   } catch(e) {
     setStatus("error", "Mic denied: " + e.message);
-    btnJoin.disabled = false; return;
+    btnJoin.disabled = false;
+    nameInput.disabled = false;
+    return;
   }
 
   ctx = new AudioContext({ sampleRate: 48000 });
@@ -240,133 +246,168 @@ async function startVoice(token) {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-  const params = getPlayerInfo();
-  const token  = getToken();
-  if (token) {
-    ws.send(JSON.stringify({ type: "browser_auth", token }));
-  } else {
     ws.send(JSON.stringify({
       type: "browser_auth",
-      uuid: params.uuid,
-      name: params.name
+      name: playerName,
+      uuid: "player-" + playerName
     }));
-                     }
-  ws.onmessage = (e) => { if(e.data instanceof ArrayBuffer) handleBinaryFromBridge(e.data); else handleJsonFromBridge(JSON.parse(e.data)); };
-  ws.onclose   = (e) => { connected=false; setStatus("error","Disconnected: "+(e.reason||"connection lost")); btnJoin.disabled=false; btnMute.disabled=true; };
-  ws.onerror   = ()  => setStatus("error","WebSocket error");
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) handleBinaryFromBridge(e.data);
+    else handleJsonFromBridge(JSON.parse(e.data));
+  };
+
+  ws.onclose = (e) => {
+    connected = false;
+    setStatus("error", "Disconnected: " + (e.reason || "connection lost"));
+    btnJoin.disabled = false;
+    nameInput.disabled = false;
+    btnMute.disabled = true;
+  };
+
+  ws.onerror = () => setStatus("error", "WebSocket error");
 }
 
 function handleJsonFromBridge(msg) {
   switch(msg.type) {
     case "auth_ok":
-      connected=true;
-      setStatus("connected", "Connected as "+msg.name);
-      btnMute.disabled=false;
+      connected = true;
+      setStatus("connected", "Connected as " + msg.name);
+      btnMute.disabled = false;
       vizWrap.classList.add("active");
       break;
     case "auth_fail":
-      setStatus("error","Auth failed: "+(msg.reason||"invalid token"));
-      btnJoin.disabled=false; break;
+      setStatus("error", "Auth failed: " + (msg.reason || "invalid token"));
+      btnJoin.disabled = false;
+      nameInput.disabled = false;
+      break;
     case "position":
     case "position_init":
       updatePlayerPosition(msg); break;
-    case "self_position":
-      selfPos={x:msg.x,y:msg.y,z:msg.z};
-      if(ctx){
-        ctx.listener.positionX?.setValueAtTime(msg.x,ctx.currentTime);
-        ctx.listener.positionY?.setValueAtTime(msg.y,ctx.currentTime);
-        ctx.listener.positionZ?.setValueAtTime(msg.z,ctx.currentTime);
-      }
-      break;
-    case "player_left": setStatus("error","You left the server"); break;
+    case "player_left":
+      setStatus("error", "You left the server"); break;
     case "mute_command":
-  muted = msg.muted;
-  btnMute.classList.toggle("muted", muted);
-  btnMute.textContent = muted ? "🔇 Unmute" : "🎤 Mute";
-  break;
+      muted = msg.muted;
+      btnMute.classList.toggle("muted", muted);
+      btnMute.textContent = muted ? "🔇 Unmute" : "🎤 Mute";
+      break;
   }
 }
 
 async function handleBinaryFromBridge(data) {
-  const view=new DataView(data);
-  if(view.getUint8(0)!==MSG_AUDIO) return;
-  const volume=view.getUint8(1)/255;
-  const nameLen=view.getUint8(2);
-  const name=new TextDecoder().decode(new Uint8Array(data,3,nameLen));
-  const opusData=new Uint8Array(data,3+nameLen);
-  const speaker=await getOrCreateSpeaker(name);
-  speaker.gainNode.gain.value=volume;
+  const view = new DataView(data);
+  if (view.getUint8(0) !== MSG_AUDIO) return;
+  const volume  = view.getUint8(1) / 255;
+  const nameLen = view.getUint8(2);
+  const name    = new TextDecoder().decode(new Uint8Array(data, 3, nameLen));
+  const opusData = new Uint8Array(data, 3 + nameLen);
+  const speaker  = await getOrCreateSpeaker(name);
+  speaker.gainNode.gain.value = volume;
   try {
     speaker.decoder.decode(new EncodedAudioChunk({
-      type:"key", timestamp:performance.now()*1000, data:opusData
+      type: "key", timestamp: performance.now() * 1000, data: opusData
     }));
-  } catch(e) { console.warn("Decode error:",e); }
-  const row=document.querySelector(`[data-uuid="${speaker._uuid}"]`);
-  if(row){ row.classList.add("speaking"); clearTimeout(row._t); row._t=setTimeout(()=>row.classList.remove("speaking"),400); }
+  } catch(e) { console.warn("Decode error:", e); }
+  const row = document.querySelector(`[data-uuid="${speaker._uuid}"]`);
+  if (row) {
+    row.classList.add("speaking");
+    clearTimeout(row._t);
+    row._t = setTimeout(() => row.classList.remove("speaking"), 400);
+  }
 }
 
 function updatePlayerPosition(msg) {
-  let p=nearbyPlayers.get(msg.uuid);
-  if(!p){ p={uuid:msg.uuid,name:msg.name,x:0,y:0,z:0,panner:null,gainNode:null,decoder:null}; nearbyPlayers.set(msg.uuid,p); }
-  p.name=msg.name; p.x=msg.x; p.y=msg.y; p.z=msg.z; p.dist=msg.dist; p.inRange=msg.inRange;
-  if(p.panner){ p.panner.positionX.value=msg.x; p.panner.positionY.value=msg.y; p.panner.positionZ.value=msg.z; }
+  let p = nearbyPlayers.get(msg.uuid);
+  if (!p) {
+    p = { uuid:msg.uuid, name:msg.name, x:0, y:0, z:0, panner:null, gainNode:null, decoder:null };
+    nearbyPlayers.set(msg.uuid, p);
+  }
+  p.name = msg.name;
   renderPlayerList();
 }
 
 async function getOrCreateSpeaker(name) {
-  for(const [uuid,p] of nearbyPlayers){ if(p.name===name){ if(!p.decoder) await setupDecoder(p); return p; } }
-  const uuid="browser-"+name;
-  const p={uuid,name,x:0,y:0,z:0,panner:null,gainNode:null,decoder:null};
-  nearbyPlayers.set(uuid,p); await setupDecoder(p); renderPlayerList(); return p;
+  for (const [uuid, p] of nearbyPlayers) {
+    if (p.name === name) { if (!p.decoder) await setupDecoder(p); return p; }
+  }
+  const uuid = "browser-" + name;
+  const p = { uuid, name, x:0, y:0, z:0, panner:null, gainNode:null, decoder:null };
+  nearbyPlayers.set(uuid, p);
+  await setupDecoder(p);
+  renderPlayerList();
+  return p;
 }
 
 async function setupDecoder(player) {
-  const g=ctx.createGain(), pan=ctx.createPanner();
-  pan.panningModel="HRTF"; pan.distanceModel="inverse";
-  pan.refDistance=1; pan.maxDistance=24; pan.rolloffFactor=1.5;
-  g.connect(pan); pan.connect(ctx.destination);
-  const dec=new AudioDecoder({
-    output:(audioData)=>{
-      const n=audioData.numberOfFrames;
-      const buf=ctx.createBuffer(1,n,audioData.sampleRate);
-      audioData.copyTo(buf.getChannelData(0),{planeIndex:0});
+  const g   = ctx.createGain();
+  const pan = ctx.createPanner();
+  pan.panningModel  = "HRTF";
+  pan.distanceModel = "inverse";
+  pan.refDistance   = 1;
+  pan.maxDistance   = 999999;
+  pan.rolloffFactor = 0;
+  g.connect(pan);
+  pan.connect(ctx.destination);
+  const dec = new AudioDecoder({
+    output: (audioData) => {
+      const n   = audioData.numberOfFrames;
+      const buf = ctx.createBuffer(1, n, audioData.sampleRate);
+      audioData.copyTo(buf.getChannelData(0), { planeIndex:0 });
       audioData.close();
-      const src=ctx.createBufferSource(); src.buffer=buf; src.connect(g); src.start();
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(g);
+      src.start();
     },
-    error:(e)=>console.error("Decoder error:",e)
+    error: (e) => console.error("Decoder error:", e)
   });
-  await dec.configure({codec:"opus",sampleRate:48000,numberOfChannels:1});
-  player.gainNode=g; player.panner=pan; player.decoder=dec; player._uuid=player.uuid;
+  await dec.configure({ codec:"opus", sampleRate:48000, numberOfChannels:1 });
+  player.gainNode = g;
+  player.panner   = pan;
+  player.decoder  = dec;
+  player._uuid    = player.uuid;
 }
 
 function renderPlayerList() {
-  if(nearbyPlayers.size===0){ playerList.innerHTML='<div class="empty-list">No players nearby</div>'; return; }
-  playerList.innerHTML="";
-  nearbyPlayers.forEach((p)=>{
-    const row=document.createElement("div");
-    row.className="player-row"; row.dataset.uuid=p.uuid;
-    const dist=p.dist!=null?`${Math.round(p.dist)}m`:"";
-    row.innerHTML=`<div class="player-dot"></div><span class="player-name">${escHtml(p.name)}</span><span class="player-dist">${dist}</span>`;
+  if (nearbyPlayers.size === 0) {
+    playerList.innerHTML = '<div class="empty-list">No players in voice yet</div>';
+    return;
+  }
+  playerList.innerHTML = "";
+  nearbyPlayers.forEach((p) => {
+    const row = document.createElement("div");
+    row.className     = "player-row";
+    row.dataset.uuid  = p.uuid;
+    row.innerHTML = `<div class="player-dot"></div><span class="player-name">${escHtml(p.name)}</span>`;
     playerList.appendChild(row);
   });
 }
 
-function setStatus(state,msg){ dot.className="dot "+state; statusText.textContent=msg; }
-function escHtml(s){ return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function setStatus(state, msg) { dot.className = "dot " + state; statusText.textContent = msg; }
+function escHtml(s) { return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 function startVisualiser(stream) {
-  const a=new AudioContext(), an=a.createAnalyser();
-  an.fftSize=256; a.createMediaStreamSource(stream).connect(an);
-  const W=vizCanvas.width=vizCanvas.offsetWidth, H=vizCanvas.height=vizCanvas.offsetHeight;
-  const vc=vizCanvas.getContext("2d"), data=new Uint8Array(an.frequencyBinCount);
-  function draw(){
-    requestAnimationFrame(draw); an.getByteFrequencyData(data);
-    vc.clearRect(0,0,W,H);
-    const bw=W/data.length*2.5;
-    data.forEach((v,i)=>{ const h=(v/255)*H; vc.fillStyle=`hsl(${180+(v/255)*60},100%,60%)`; vc.fillRect(i*(bw+1),H-h,bw,h); });
+  const a  = new AudioContext(), an = a.createAnalyser();
+  an.fftSize = 256;
+  a.createMediaStreamSource(stream).connect(an);
+  const W  = vizCanvas.width  = vizCanvas.offsetWidth;
+  const H  = vizCanvas.height = vizCanvas.offsetHeight;
+  const vc = vizCanvas.getContext("2d");
+  const data = new Uint8Array(an.frequencyBinCount);
+  function draw() {
+    requestAnimationFrame(draw);
+    an.getByteFrequencyData(data);
+    vc.clearRect(0, 0, W, H);
+    const bw = W / data.length * 2.5;
+    data.forEach((v, i) => {
+      const h = (v / 255) * H;
+      vc.fillStyle = `hsl(${180 + (v/255)*60},100%,60%)`;
+      vc.fillRect(i * (bw + 1), H - h, bw, h);
+    });
   }
   draw();
 }
 </script>
 </body>
-  </html>
+ </html>
