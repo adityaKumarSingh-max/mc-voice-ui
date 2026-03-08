@@ -350,33 +350,11 @@ async function getOrCreateSpeaker(name) {
 
 async function setupDecoder(player) {
   const g   = ctx.createGain();
-  const pan = ctx.createPanner();
-  pan.panningModel  = "HRTF";
-  pan.distanceModel = "inverse";
-  pan.refDistance   = 1;
-  pan.maxDistance   = 999999;
-  pan.rolloffFactor = 0;
-  g.connect(pan);
-  pan.connect(ctx.destination);
-  const dec = new AudioDecoder({
-    output: (audioData) => {
-      const n   = audioData.numberOfFrames;
-      const buf = ctx.createBuffer(1, n, audioData.sampleRate);
-      audioData.copyTo(buf.getChannelData(0), { planeIndex:0 });
-      audioData.close();
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(g);
-      src.start();
-    },
-    error: (e) => console.error("Decoder error:", e)
-  });
-  await dec.configure({ codec:"opus", sampleRate:48000, numberOfChannels:1 });
+  g.gain.value = 1.0;
+  g.connect(ctx.destination);
   player.gainNode = g;
-  player.panner   = pan;
-  player.decoder  = dec;
   player._uuid    = player.uuid;
-}
+ }
 
 function renderPlayerList() {
   if (nearbyPlayers.size === 0) {
