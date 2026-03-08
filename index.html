@@ -298,17 +298,26 @@ function handleJsonFromBridge(msg) {
 async function handleBinaryFromBridge(data) {
   const view = new DataView(data);
   if (view.getUint8(0) !== MSG_AUDIO) return;
-  const volume  = view.getUint8(1) / 255;
-  const nameLen = view.getUint8(2);
-  const name    = new TextDecoder().decode(new Uint8Array(data, 3, nameLen));
-  const opusData = new Uint8Array(data, 3 + nameLen);
+  const nameLen  = view.getUint8(1);
+  const name     = new TextDecoder().decode(new Uint8Array(data, 2, nameLen));
+  const pcmData  = new Int16Array(data, 2 + nameLen);
   const speaker  = await getOrCreateSpeaker(name);
-  speaker.gainNode.gain.value = volume;
-  try {
-    speaker.decoder.decode(new EncodedAudioChunk({
-      type: "key", timestamp: performance.now() * 1000, data: opusData
-    }));
-  } catch(e) { console.warn("Decode error:", e); }
+
+  // Convert Int16 PCM to Float32
+  const float32 = new Float32Array(pcmData.length);
+  for (let i = 0; i < pcmData.length; i++) {
+    float32[i] = pcmData[i] / 32768.0;
+  }
+
+  // Play audio
+  if (ctx) {
+    const buf = ctx.createBuffer(1, float32.length, 48000);
+    buf.copyToChannel(float32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(speaker.gainNode);
+    src.start();
+       }
   const row = document.querySelector(`[data-uuid="${speaker._uuid}"]`);
   if (row) {
     row.classList.add("speaking");
